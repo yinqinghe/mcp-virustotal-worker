@@ -1,0 +1,8 @@
+name = "mcp-virustotal"
+main = "src/worker.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# 可以在此处添加环境变量，敏感信息（API Key）需通过 secret 设置
+VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"
