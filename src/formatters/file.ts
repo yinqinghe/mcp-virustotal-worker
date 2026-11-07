@@ -4,155 +4,69 @@ import { formatDateTime, formatDetectionResults } from './utils.js';
 import { logToFile } from '../utils/logging.js';
 import { RelationshipData } from '../types/virustotal.js';
 
-interface SandboxVerdict {
-  category: string;
-  confidence: number;
-  malware_classification?: string[];
-  malware_names?: string[];
-  sandbox_name: string;
-}
-
-interface CrowdsourcedIdsResult {
-  alert_severity: string;
-  rule_category: string;
-  rule_id: string;
-  rule_msg: string;
-  rule_source: string;
-  alert_context?: Array<{
-    proto?: string;
-    src_ip?: string;
-    src_port?: number;
-    dest_ip?: string;    // Add this
-    dest_port?: number;  // Add this
-    hostname?: string;   // Add this
-    url?: string;       // Add this
-  }>;
-}
-
-interface YaraResult {
-  description: string;
-  match_in_subfile: boolean;
-  rule_name: string;
-  ruleset_id: string;
-  ruleset_name: string;
-  source: string;
-}
-
-interface SigmaResult {
-  rule_title: string;
-  rule_source: string;
-  rule_level: string;
-  rule_description: string;
-  rule_author: string;
-  rule_id: string;
-  match_context?: Array<{
-    values: Record<string, string>;
-  }>;
-}
-
 interface FileData {
   attributes?: any;
   relationships?: Record<string, RelationshipData>;
 }
 
-interface AnalysisStats {
-  harmless: number;
-  malicious: number;
-  suspicious: number;
-  undetected: number;
-  timeout: number;
+export function formatFileSize(bytes: number): string {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  return `${size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+// Compact relationship item renderer (for relationship pagination and report summary)
 export function formatRelationshipData(relType: string, item: any): string {
   const attrs = item.attributes || {};
 
   switch (relType) {
-    case 'behaviours':
-      const activities = [
-        ...(attrs.processes_created || []),
-        ...(attrs.command_executions || []),
-        ...(attrs.activities_started || [])
-      ].filter(Boolean);
+    case 'behaviours': {
+      const sandbox = attrs.sandbox_name || 'Sandbox';
+      const verdicts = attrs.verdicts?.join(', ') || 'Clean';
+      const acts = (attrs.processes_created?.length || 0) + (attrs.command_executions?.length || 0);
+      return `• [${sandbox}] Verdict: ${verdicts} (Processes: ${acts}, Files Written: ${attrs.files_written?.length || 0})`;
+    }
 
-      const files = [
-        ...(attrs.files_opened || []),
-        ...(attrs.files_written || [])
-      ].filter(Boolean);
+    case 'contacted_domains': {
+      const id = item.id || attrs.id;
+      return `• ${id}`;
+    }
 
-      const registry = [
-        ...(attrs.registry_keys_opened || []),
-        ...(attrs.registry_keys_set?.map((reg: any) => `${reg.key}: ${reg.value}`) || []),
-        ...(attrs.registry_keys_deleted || [])
-      ].filter(Boolean);
-
-      const network = attrs.ids_results?.map((result: any) => {
-        const ctx = result.alert_context || {};
-        return `${result.rule_msg} (${ctx.proto || 'unknown'} ${ctx.src_ip || ''}:${ctx.src_port || ''} -> ${ctx.dest_ip || ''}:${ctx.dest_port || ''})`;
-      }) || [];
-
-      return `  • Sandbox: ${attrs.sandbox_name || 'Unknown'}
-    Activities (${activities.length}):${activities.length ? '\n      - ' + activities.slice(0, 5).join('\n      - ') + (activities.length > 5 ? '\n      ... and more' : '') : ' None'}
-    Files (${files.length}):${files.length ? '\n      - ' + files.slice(0, 5).join('\n      - ') + (files.length > 5 ? '\n      ... and more' : '') : ' None'}
-    Registry (${registry.length}):${registry.length ? '\n      - ' + registry.slice(0, 5).join('\n      - ') + (registry.length > 5 ? '\n      ... and more' : '') : ' None'}
-    Network (${network.length}):${network.length ? '\n      - ' + network.slice(0, 5).join('\n      - ') + (network.length > 5 ? '\n      ... and more' : '') : ' None'}
-    Verdicts: ${attrs.verdicts?.join(', ') || 'None'}`;
-
-    case 'contacted_domains':
-    case 'embedded_domains':
-    case 'itw_domains':
-      return `  • ${attrs.id || item.id}
-    Categories: ${Object.entries(attrs.categories || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'None'}
-    Last Analysis Stats: ${attrs.last_analysis_stats ? 
-      `🔴 ${attrs.last_analysis_stats.malicious} malicious, ✅ ${attrs.last_analysis_stats.harmless} harmless` : 
-      'Unknown'}`;
-
-    case 'contacted_ips':
-    case 'embedded_ips':
-    case 'itw_ips':
-      return `  • ${attrs.ip_address || item.id}
-    Country: ${attrs.country || 'Unknown'}
-    AS Owner: ${attrs.as_owner || 'Unknown'}
-    Last Analysis Stats: ${attrs.last_analysis_stats ? 
-      `🔴 ${attrs.last_analysis_stats.malicious} malicious, ✅ ${attrs.last_analysis_stats.harmless} harmless` : 
-      'Unknown'}`;
-
-    case 'contacted_urls':
-    case 'embedded_urls':
-    case 'itw_urls':
-      return `  • ${attrs.url || item.id}
-    Last Analysis: ${attrs.last_analysis_date ? formatDateTime(attrs.last_analysis_date) : 'Unknown'}
-    Reputation: ${attrs.reputation ?? 'Unknown'}`;
+    case 'contacted_ips': {
+      const ip = attrs.ip_address || item.id;
+      const country = attrs.country ? ` (${attrs.country})` : '';
+      const mal = attrs.last_analysis_stats?.malicious;
+      const malInfo = mal ? ` [🔴 ${mal} mal]` : '';
+      return `• ${ip}${country}${malInfo}`;
+    }
 
     case 'dropped_files':
-      return `  • ${attrs.meaningful_name || attrs.names?.[0] || item.id}
-    Type: ${attrs.type_description || attrs.type || 'Unknown'}
-    Size: ${attrs.size ? formatFileSize(attrs.size) : 'Unknown'}
-    First Seen: ${attrs.first_submission_date ? formatDateTime(attrs.first_submission_date) : 'Unknown'}
-    Detection Stats: ${attrs.last_analysis_stats ? 
-      `🔴 ${attrs.last_analysis_stats.malicious} malicious, ✅ ${attrs.last_analysis_stats.harmless} harmless` : 
-      'Unknown'}`;
+    case 'bundled_files':
+    case 'communicating_files': {
+      const name = attrs.meaningful_name || attrs.names?.[0] || item.id;
+      const type = attrs.type_description || attrs.type || '';
+      const size = attrs.size ? `, ${formatFileSize(attrs.size)}` : '';
+      return `• ${name}${type ? ` (${type}${size})` : ''}`;
+    }
 
-    case 'similar_files':
-      return `  • ${attrs.meaningful_name || item.id}
-    Type: ${attrs.type_description || attrs.type || 'Unknown'}
-    Size: ${attrs.size ? formatFileSize(attrs.size) : 'Unknown'}
-    First Seen: ${attrs.first_submission_date ? formatDateTime(attrs.first_submission_date) : 'Unknown'}`;
+    case 'related_threat_actors': {
+      const name = attrs.name || item.id;
+      return `• Actor: ${name}`;
+    }
 
-    case 'execution_parents':
-      const stats = attrs.last_analysis_stats as AnalysisStats;
-      const totalDetections = stats ? 
-        Object.values(stats).reduce((a: number, b: number) => a + b, 0) : 0;
-      return `  • ${attrs.meaningful_name || item.id}
-    Type: ${attrs.type_description || attrs.type || 'Unknown'}
-    First Seen: ${attrs.first_submission_date ? formatDateTime(attrs.first_submission_date) : 'Unknown'}
-    Detection Ratio: ${stats ? `${stats.malicious}/${totalDetections}` : 'Unknown'}`;
-
-    case 'related_threat_actors':
-      return `  • ${attrs.name || item.id}
-    Description: ${attrs.description || 'No description available'}`;
+    case 'collections': {
+      const name = attrs.name || item.id;
+      return `• Collection: ${name}`;
+    }
 
     default:
-      return `  • ${item.id}`;
+      return `• ${attrs.meaningful_name || attrs.name || item.id}`;
   }
 }
 
@@ -160,222 +74,107 @@ export function formatFileResults(data: FileData): FormattedResult {
   try {
     const attributes = data?.attributes || {};
     const stats = attributes?.last_analysis_stats || {};
-    const results = attributes?.last_analysis_results || {};
+    const size = attributes?.size ? formatFileSize(attributes.size) : 'Unknown';
+    const type = attributes?.type_description || attributes?.type_tag || 'Unknown';
+    const name = attributes?.meaningful_name || attributes?.names?.[0] || 'Unknown File';
+    const sha256 = attributes?.sha256 || 'N/A';
+    const md5 = attributes?.md5 || '';
+
+    const lines: string[] = [
+      `### 📁 File Analysis: \`${name}\``,
+      `- **Hashes**: SHA-256: \`${sha256}\`${md5 ? ` | MD5: \`${md5}\`` : ''}`,
+      `- **Type & Size**: ${type} | ${size}${attributes?.first_submission_date ? ` | First seen: ${formatDateTime(attributes.first_submission_date).split(' ')[0]}` : ''}`,
+      `- ${formatDetectionResults(stats)}`,
+    ];
+
+    // Threat classification
+    const threatClass = attributes?.popular_threat_classification;
+    if (threatClass?.suggested_threat_label) {
+      const cats = threatClass.popular_threat_category?.map((c: any) => c.value).join(', ');
+      lines.push(`- **Threat Classification**: \`${threatClass.suggested_threat_label}\`${cats ? ` (Category: ${cats})` : ''}`);
+    }
+
+    // Popular Security Vendors
+    const popularEngines = ['Microsoft', 'Kaspersky', 'Symantec', 'Sophos', 'CrowdStrike'];
+    const detectedPopular: string[] = [];
+    if (attributes?.last_analysis_results) {
+      for (const [engine, res] of Object.entries(attributes.last_analysis_results as Record<string, any>)) {
+        if (popularEngines.includes(engine) && (res.category === 'malicious' || res.category === 'suspicious')) {
+          detectedPopular.push(`${engine}: ${res.result || 'Malicious'}`);
+        }
+      }
+    }
+    if (detectedPopular.length > 0) {
+      lines.push(`- **Flagged Engines**: ${detectedPopular.join(' | ')}`);
+    }
+
+    // Sandbox Verdicts summary (only if flagged or has verdicts)
     const sandboxResults = attributes?.sandbox_verdicts || {};
-    const sigmaResults = attributes?.sigma_analysis_results || [];
-    const sigmaStats = attributes?.sigma_analysis_stats || {};
-    const crowdsourcedIds = attributes?.crowdsourced_ids_results || [];
-    const crowdsourcedIdsStats = attributes?.crowdsourced_ids_stats || {};
-    const yaraResults = attributes?.crowdsourced_yara_results || [];
-    
-    let outputArray = [
-      `📁 File Analysis Results`,
-      `🔑 Hashes:`,
-      `• SHA-256: ${attributes?.sha256 || 'Unknown'}`,
-      `• SHA-1: ${attributes?.sha1 || 'Unknown'}`,
-      `• MD5: ${attributes?.md5 || 'Unknown'}`,
-      attributes?.vhash ? `• VHash: ${attributes.vhash}` : null,
-      ``,
-      `📄 File Information:`,
-      `• Name: ${attributes?.meaningful_name || attributes?.names?.[0] || 'Unknown'}`,
-      `• Type: ${attributes?.type_description || 'Unknown'}`,
-      `• Size: ${attributes?.size ? formatFileSize(attributes.size) : 'Unknown'}`,
-      `• First Seen: ${formatDateTime(attributes?.first_submission_date)}`,
-      `• Last Modified: ${formatDateTime(attributes?.last_modification_date)}`,
-      `• Times Submitted: ${attributes?.times_submitted || 0}`,
-      `• Unique Sources: ${attributes?.unique_sources || 0}`,
-      ``,
-      `📊 Analysis Statistics:`,
-      formatDetectionResults(stats),
-    ].filter(Boolean);
-
-    // Add reputation and votes
-    const reputation = attributes?.reputation ?? 'N/A';
-    const votes = attributes?.total_votes || {};
-    outputArray.push(
-      ``,
-      `👥 Community Feedback:`,
-      `• Reputation Score: ${reputation}`,
-      `• Harmless Votes: ${votes.harmless || 0}`,
-      `• Malicious Votes: ${votes.malicious || 0}`
-    );
-
-    // Add capabilities if available
-    if (attributes?.capabilities_tags?.length > 0) {
-      outputArray.push(
-        ``,
-        `⚡ Capabilities:`,
-        ...attributes.capabilities_tags.map((tag: string) => `• ${formatCapabilityTag(tag)}`)
-      );
-    }
-
-    // Add tags if available
-    if (attributes?.tags?.length > 0) {
-      outputArray.push(
-        ``,
-        `🏷️ Tags:`,
-        ...attributes.tags.map((tag: string) => `• ${tag}`)
-      );
-    }
-
-    // Add sandbox verdicts if available
-    if (Object.keys(sandboxResults).length > 0) {
-      outputArray.push(
-        ``,
-        `🔬 Sandbox Analysis Results:`
-      );
-      for (const [sandbox, verdict] of Object.entries(sandboxResults)) {
-        const v = verdict as SandboxVerdict;
-        outputArray.push(
-          `${sandbox}:`,
-          `• Category: ${v.category}`,
-          `• Confidence: ${v.confidence}%`,
-          ...(v.malware_classification ? [`• Classification: ${v.malware_classification.join(', ')}`] : []),
-          ...(v.malware_names ? [`• Identified as: ${v.malware_names.join(', ')}`] : []),
-          ``
-        );
+    const suspiciousSandboxes: string[] = [];
+    for (const [name, verdict] of Object.entries(sandboxResults as Record<string, any>)) {
+      if (verdict?.category === 'malicious' || verdict?.category === 'suspicious') {
+        const id = verdict.malware_names?.[0] || verdict.malware_classification?.[0] || verdict.category;
+        suspiciousSandboxes.push(`${name} [${id}]`);
       }
     }
-
-    // Add Sigma analysis results if available
-    if (sigmaResults.length > 0 || Object.keys(sigmaStats).length > 0) {
-      outputArray.push(
-        ``,
-        `🎯 Sigma Analysis:`,
-        `Statistics:`,
-        `• Critical: ${sigmaStats.critical || 0}`,
-        `• High: ${sigmaStats.high || 0}`,
-        `• Medium: ${sigmaStats.medium || 0}`,
-        `• Low: ${sigmaStats.low || 0}`,
-        ``
-      );
-
-      if (sigmaResults.length > 0) {
-        outputArray.push(`Detected Rules:`);
-        for (const result of sigmaResults) {
-          const r = result as SigmaResult;
-          outputArray.push(
-            `${r.rule_title}:`,
-            `• Level: ${r.rule_level}`,
-            `• Source: ${r.rule_source}`,
-            `• Description: ${r.rule_description}`,
-            `• Author: ${r.rule_author}`,
-            ``
-          );
-        }
-      }
+    if (suspiciousSandboxes.length > 0) {
+      lines.push(`- **Sandbox Detections**: ${suspiciousSandboxes.slice(0, 4).join(', ')}`);
     }
 
-    // Add crowdsourced IDS results if available
-    if (crowdsourcedIds.length > 0) {
-      outputArray.push(
-        ``,
-        `🛡️ Intrusion Detection Results:`,
-        `Statistics:`,
-        `• High: ${crowdsourcedIdsStats.high || 0}`,
-        `• Medium: ${crowdsourcedIdsStats.medium || 0}`,
-        `• Low: ${crowdsourcedIdsStats.low || 0}`,
-        `• Info: ${crowdsourcedIdsStats.info || 0}`,
-        ``
-      );
-
-      outputArray.push(`Alerts:`);
-      for (const alert of crowdsourcedIds) {
-        const a = alert as CrowdsourcedIdsResult;
-        outputArray.push(
-          `• ${a.rule_msg}`,
-          `  - Severity: ${a.alert_severity}`,
-          `  - Category: ${a.rule_category}`,
-          `  - Source: ${a.rule_source}`,
-          ``
-        );
-      }
+    // Rules summary (Sigma / YARA / IDS)
+    const ruleParts: string[] = [];
+    if (attributes?.sigma_analysis_results?.length) {
+      ruleParts.push(`Sigma: ${attributes.sigma_analysis_results.length}`);
+    }
+    if (attributes?.crowdsourced_yara_results?.length) {
+      ruleParts.push(`YARA: ${attributes.crowdsourced_yara_results.length}`);
+    }
+    if (attributes?.crowdsourced_ids_results?.length) {
+      ruleParts.push(`IDS Alerts: ${attributes.crowdsourced_ids_results.length}`);
+    }
+    if (ruleParts.length > 0) {
+      lines.push(`- **Detections Rules**: ${ruleParts.join(' | ')}`);
     }
 
-    // Add YARA results if available
-    if (yaraResults.length > 0) {
-      outputArray.push(
-        ``,
-        `🔍 YARA Detections:`
-      );
-      for (const yara of yaraResults) {
-        const y = yara as YaraResult;
-        outputArray.push(
-          `• Rule: ${y.rule_name}`,
-          `  - Description: ${y.description}`,
-          `  - Ruleset: ${y.ruleset_name}`,
-          `  - Source: ${y.source}`,
-          ``
-        );
-      }
+    // Tags (inline compact)
+    if (attributes?.tags?.length) {
+      lines.push(`- **Tags**: ${attributes.tags.slice(0, 8).join(', ')}`);
     }
 
-    // Add popular engine results
-    const popularEngines = Object.entries(results)
-      .filter(([engine]) => ['Microsoft', 'Kaspersky', 'Symantec', 'McAfee'].includes(engine));
-
-    if (popularEngines.length > 0) {
-      outputArray.push(
-        ``,
-        `🔰 Popular Engines Results:`,
-        ...popularEngines.map(([engine, result]: [string, any]) => 
-          `• ${engine}: ${result?.result || 'Clean'} ${
-            result?.category === 'malicious' ? '🔴' : 
-            result?.category === 'suspicious' ? '⚠️' : '✅'
-          }`
-        )
-      );
-    }
-
-    // Format relationships if available
-    if (data.relationships) {
-      outputArray.push('\n🔗 Relationships:');
-      
+    // Relationships (Compact inline previews)
+    if (data.relationships && Object.keys(data.relationships).length > 0) {
+      lines.push(`- **Relationships Summary**:`);
       for (const [relType, relData] of Object.entries(data.relationships)) {
-        const count = relData.meta?.count || (Array.isArray(relData.data) ? relData.data.length : 1);
-        
-        outputArray.push(`\n${relType} (${count} items):`);
-        
-        if (Array.isArray(relData.data)) {
-          relData.data.forEach(item => {
-            outputArray.push(formatRelationshipData(relType, item));
-          });
-        } else if (relData.data) {
-          outputArray.push(formatRelationshipData(relType, relData.data));
+        const items = Array.isArray(relData.data) ? relData.data : relData.data ? [relData.data] : [];
+        const count = relData.meta?.count ?? items.length;
+        if (count === 0 && items.length === 0) continue;
+
+        const previewItems: string[] = [];
+        for (const it of items.slice(0, 3)) {
+          const itAttrs = it.attributes || {};
+          const label =
+            itAttrs.meaningful_name ||
+            itAttrs.names?.[0] ||
+            itAttrs.ip_address ||
+            itAttrs.url ||
+            it.id;
+          if (label) previewItems.push(String(label));
         }
+
+        const more = count > 3 ? ` (+${count - 3} more)` : '';
+        lines.push(`  • **${relType}** (${count}): ${previewItems.join(', ')}${more}`);
       }
     }
 
     return {
-      type: "text",
-      text: outputArray.filter(Boolean).join('\n')
+      type: 'text',
+      text: lines.join('\n'),
     };
   } catch (error) {
     logToFile(`Error formatting file results: ${error}`);
     return {
-      type: "text",
-      text: "Error formatting file results"
+      type: 'text',
+      text: 'Error formatting file results',
     };
   }
-}
-
-function formatFileSize(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let size = bytes;
-  let unitIndex = 0;
-  
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex++;
-  }
-  
-  return `${size.toFixed(2)} ${units[unitIndex]}`;
-}
-
-function formatCapabilityTag(tag: string): string {
-  // Convert snake_case to Title Case and replace underscores with spaces
-  return tag
-    .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
 }

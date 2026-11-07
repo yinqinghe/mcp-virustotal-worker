@@ -8,7 +8,7 @@ export function formatDateTime(timestamp: number | string | null): string {
     const date = typeof timestamp === 'number' 
       ? new Date(timestamp * 1000)
       : new Date(timestamp);
-    return date.toLocaleString();
+    return date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
   } catch (error) {
     logToFile(`Error formatting datetime: ${error}`);
     return 'Invalid Date';
@@ -34,19 +34,18 @@ export function formatDetectionResults(results: any): string {
     const total = malicious + suspicious + harmless + undetected;
 
     if (total === 0) {
-      return "No detection results available";
+      return 'Detections: No detection data available';
     }
 
-    return [
-      "Detection Results:",
-      `🔴 Malicious: ${malicious} (${formatPercentage(malicious, total)})`,
-      `⚠️  Suspicious: ${suspicious} (${formatPercentage(suspicious, total)})`,
-      `✅ Clean: ${harmless} (${formatPercentage(harmless, total)})`,
-      `⚪ Undetected: ${undetected} (${formatPercentage(undetected, total)})`,
-      `📊 Total Scans: ${total}`,
-    ].join('\n');
+    if (malicious > 0) {
+      return `🔴 Detections: ${malicious}/${total} engines flagged as malicious (⚠️ ${suspicious} suspicious, ✅ ${harmless} clean, ${undetected} undetected)`;
+    }
+    if (suspicious > 0) {
+      return `⚠️ Detections: 0/${total} malicious (⚠️ ${suspicious} suspicious, ✅ ${harmless} clean, ${undetected} undetected)`;
+    }
+    return `✅ Detections: 0/${total} malicious (Clean)`;
   } catch (error) {
     logToFile(`Error formatting detection results: ${error}`);
-    return "Error formatting detection results";
+    return 'Error formatting detection results';
   }
 }

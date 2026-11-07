@@ -3,158 +3,114 @@
 import { FormattedResult } from './types.js';
 import { formatDateTime, formatDetectionResults } from './utils.js';
 import { logToFile } from '../utils/logging.js';
-import { DomainData, RelationshipData } from '../types/virustotal.js';
+import { DomainData } from '../types/virustotal.js';
 
 export function formatDomainResults(data: DomainData): FormattedResult {
   try {
-    const attributes = data?.attributes || {};
+    const domain = data?.id || 'Unknown Domain';
+    const attributes = (data as any)?.attributes || {};
     const stats = attributes?.last_analysis_stats || {};
     const categories = attributes?.categories || {};
     const ranks = attributes?.popularity_ranks || {};
     const whois = attributes?.whois || '';
     const dnsRecords = attributes?.last_dns_records || [];
     const threatSeverity = attributes?.threat_severity;
-    const votes = attributes?.total_votes;
-    
-    let outputArray = [
-      `🌍 Domain Analysis Results`,
-      `Domain: ${data?.id || 'Unknown Domain'}`,
-      `📅 Last Analysis Date: ${attributes.last_analysis_date ? formatDateTime(attributes.last_analysis_date) : 'N/A'}`,
-      `📊 Reputation Score: ${attributes?.reputation ?? 'N/A'}`,
-      "",
-      "Analysis Statistics:",
-      formatDetectionResults(stats),
+    const reputation = attributes?.reputation ?? 0;
+
+    const lines: string[] = [
+      `### 🌍 VirusTotal Domain Analysis: \`${domain}\``,
+      `- ${formatDetectionResults(stats)}`,
+      `- **Reputation**: ${reputation}${threatSeverity?.threat_severity_level ? ` | Threat Level: ${threatSeverity.threat_severity_level}` : ''}`,
     ];
 
-    // Add threat severity if available
-    if (threatSeverity && threatSeverity.threat_severity_level) {
-      const severityData = threatSeverity.threat_severity_data;
-      outputArray.push(
-        "",
-        "Threat Severity:",
-        `Level: ${threatSeverity.threat_severity_level}`,
-        `Description: ${threatSeverity.level_description || 'N/A'}`,
-        ...(severityData ? [
-          `Detections: ${severityData.num_detections}`,
-          `Bad Collection: ${severityData.belongs_to_bad_collection ? 'Yes' : 'No'}`
-        ] : [])
-      );
-    }
-
-    // Add categories if available
+    // Categories (distinct inline)
     if (Object.keys(categories).length > 0) {
-      outputArray = [
-        ...outputArray,
-        "",
-        "Categories:",
-        ...Object.entries(categories).map(([service, category]) => 
-          `• ${service}: ${category}`
-        )
-      ];
+      const distinctCats = Array.from(new Set(Object.values(categories))).slice(0, 5);
+      lines.push(`- **Categories**: ${distinctCats.join(', ')}`);
     }
 
-    // Add DNS records if available
+    // DNS Records (compact inline)
     if (dnsRecords.length > 0) {
-      outputArray = [
-        ...outputArray,
-        "",
-        "Latest DNS Records:",
-        ...dnsRecords.map((record) => 
-          `• ${record.type}: ${record.value} (TTL: ${record.ttl})`
-        )
-      ];
+      const dnsSummary = dnsRecords
+        .slice(0, 4)
+        .map((r: any) => `${r.type}: ${r.value}`)
+        .join(' | ');
+      const more = dnsRecords.length > 4 ? ` (+${dnsRecords.length - 4} more)` : '';
+      lines.push(`- **DNS Records**: ${dnsSummary}${more}`);
     }
 
-    // Add popularity rankings if available
+    // Popularity Rankings (compact inline)
     if (Object.keys(ranks).length > 0) {
-      outputArray = [
-        ...outputArray,
-        "",
-        "Popularity Rankings:",
-        ...Object.entries(ranks).map(([service, data]) => 
-          `• ${service}: Rank ${data.rank || 'N/A'}`
-        )
-      ];
+      const rankList = Object.entries(ranks)
+        .slice(0, 3)
+        .map(([service, info]: [string, any]) => `${service}: #${info.rank || 'N/A'}`)
+        .join(', ');
+      lines.push(`- **Popularity**: ${rankList}`);
     }
 
-    // Add key WHOIS information
+    // WHOIS summary (1 line)
     if (whois) {
-      const whoisLines = whois.split('\n');
-      const keyFields = [
-        'Registrar:', 
-        'Creation Date:', 
-        'Registry Expiry Date:', 
-        'Updated Date:',
-        'Registrant Organization:',
-        'Admin Organization:'
-      ];
-      
-      const relevantWhois = whoisLines
-        .filter((line: string) => keyFields.some(field => line.startsWith(field)))
-        .filter((item: string, index: number, self: string[]) => 
-          self.indexOf(item) === index
-        ); // Remove duplicates
+      const whoisLines = String(whois).split('\n');
+      const findField = (prefixes: string[]) => {
+        for (const line of whoisLines) {
+          const trimmed = line.trim();
+          for (const prefix of prefixes) {
+            if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+              return trimmed.split(':')[1]?.trim() || '';
+            }
+          }
+        }
+        return '';
+      };
+      const registrar = findField(['Registrar:']);
+      const created = findField(['Creation Date:']);
+      const org = findField(['Registrant Organization:', 'Admin Organization:']);
+      const whoisSummary = [
+        registrar ? `Registrar: ${registrar}` : null,
+        created ? `Created: ${created.split('T')[0]}` : null,
+        org ? `Org: ${org}` : null,
+      ].filter(Boolean).join(' | ');
 
-      if (relevantWhois.length > 0) {
-        outputArray = [
-          ...outputArray,
-          "",
-          "WHOIS Information:",
-          ...relevantWhois.map((line: string) => `• ${line.trim()}`)
-        ];
+      if (whoisSummary) {
+        lines.push(`- **WHOIS**: ${whoisSummary}`);
       }
     }
 
-    // Add creation and modification dates
-    if (attributes.creation_date) {
-      outputArray.push(`\nCreation Date: ${formatDateTime(attributes.creation_date)}`);
-    }
-    if (attributes.last_modification_date) {
-      outputArray.push(`Last Modified: ${formatDateTime(attributes.last_modification_date)}`);
-    }
+    // Relationships summary
+    const relationships = (data as any)?.relationships;
+    if (relationships && Object.keys(relationships).length > 0) {
+      lines.push(`- **Relationships Summary**:`);
+      for (const [relType, relData] of Object.entries(relationships as Record<string, any>)) {
+        const items = Array.isArray(relData.data) ? relData.data : relData.data ? [relData.data] : [];
+        const count = relData.meta?.count ?? items.length;
+        if (count === 0 && items.length === 0) continue;
 
-    // Add total votes if available
-    if (votes) {
-      outputArray.push(
-        "",
-        "Community Votes:",
-        `• Harmless: ${votes.harmless || 0}`,
-        `• Malicious: ${votes.malicious || 0}`
-      );
-    }
-
-    // Format relationships if available
-    if (data.relationships) {
-      outputArray.push('\n🔗 Relationships:');
-      
-      for (const [relType, relData] of Object.entries(data.relationships)) {
-        const typedRelData = relData as RelationshipData;
-        const count = typedRelData.meta?.count || 
-          (Array.isArray(typedRelData.data) ? typedRelData.data.length : 1);
-        
-        outputArray.push(`\n${relType} (${count} items):`);
-        
-        if (Array.isArray(typedRelData.data)) {
-          typedRelData.data.forEach(item => {
-            if (item.formattedOutput) {
-              outputArray.push(item.formattedOutput);
-            }
-          });
-        } else if (typedRelData.data && 'formattedOutput' in typedRelData.data && typedRelData.data.formattedOutput) {
-          outputArray.push(typedRelData.data.formattedOutput);
+        const previewItems: string[] = [];
+        for (const it of items.slice(0, 3)) {
+          const itAttrs = it.attributes || {};
+          const label =
+            itAttrs.meaningful_name ||
+            itAttrs.ip_address ||
+            itAttrs.host_name ||
+            itAttrs.name ||
+            it.id;
+          if (label) previewItems.push(String(label));
         }
+
+        const more = count > 3 ? ` (+${count - 3} more)` : '';
+        lines.push(`  • **${relType}** (${count}): ${previewItems.join(', ')}${more}`);
       }
     }
 
     return {
-      type: "text",
-      text: outputArray.join('\n')
+      type: 'text',
+      text: lines.join('\n'),
     };
   } catch (error) {
     logToFile(`Error formatting domain results: ${error}`);
     return {
-      type: "text",
-      text: "Error formatting domain results"
+      type: 'text',
+      text: 'Error formatting domain results',
     };
   }
 }

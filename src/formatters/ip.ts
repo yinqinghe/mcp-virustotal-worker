@@ -5,258 +5,149 @@ import { formatDateTime, formatDetectionResults } from './utils.js';
 import { logToFile } from '../utils/logging.js';
 import { RelationshipData } from '../types/virustotal.js';
 
-interface Certificate {
-  issuer: {
-    C?: string;
-    CN?: string;
-    O?: string;
-  };
-  subject: {
-    CN?: string;
-  };
-  validity: {
-    not_after: string;
-    not_before: string;
-  };
-  version: string;
-  serial_number: string;
-  thumbprint: string;
-  thumbprint_sha256: string;
-  extensions?: {
-    CA?: boolean;
-    subject_alternative_name?: string[];
-    certificate_policies?: string[];
-    extended_key_usage?: string[];
-    key_usage?: string[];
-  };
-}
-
-interface IpAttributes {
-  as_owner?: string;
-  asn?: number;
-  continent?: string;
-  country?: string;
-  network?: string;
-  regional_internet_registry?: string;
-  jarm?: string;
-  reputation?: number;
-  last_analysis_stats?: {
-    harmless: number;
-    malicious: number;
-    suspicious: number;
-    timeout: number;
-    undetected: number;
-  };
-  last_analysis_results?: Record<string, {
-    category: string;
-    engine_name: string;
-    method: string;
-    result: string | null;
-  }>;
-  last_https_certificate?: Certificate;
-  last_https_certificate_date?: number;
-  whois?: string;
-  whois_date?: number;
-  tags?: string[];
-  total_votes?: {
-    harmless: number;
-    malicious: number;
-  };
-}
-
 interface IpData {
   id?: string;
   ip?: string;
-  attributes?: IpAttributes;
+  attributes?: any;
   relationships?: Record<string, RelationshipData>;
 }
 
 export function formatRelationshipData(relType: string, item: any): string {
   const attrs = item.attributes || {};
-  
+
   switch (relType) {
     case 'communicating_files':
-    case 'downloaded_files':
-      return `  • ${attrs.meaningful_name || item.id}
-    Type: ${attrs.type_description || attrs.type || 'Unknown'}
-    First Seen: ${attrs.first_submission_date ? formatDateTime(attrs.first_submission_date) : 'Unknown'}`;
+    case 'downloaded_files': {
+      const name = attrs.meaningful_name || attrs.names?.[0] || item.id;
+      const type = attrs.type_description || attrs.type || 'File';
+      return `• ${name} (${type})`;
+    }
 
-    case 'historical_ssl_certificates':
-      const certInfo = [];
-      if (attrs.subject?.CN) certInfo.push(`Subject: ${attrs.subject.CN}`);
-      if (attrs.issuer?.CN) certInfo.push(`Issuer: ${attrs.issuer.CN}`);
-      if (attrs.validity?.not_before) certInfo.push(`Valid From: ${formatDateTime(new Date(attrs.validity.not_before).getTime() / 1000)}`);
-      if (attrs.validity?.not_after) certInfo.push(`Valid Until: ${formatDateTime(new Date(attrs.validity.not_after).getTime() / 1000)}`);
-      if (attrs.serial_number) certInfo.push(`Serial: ${attrs.serial_number}`);
-      return `  • SSL Certificate${certInfo.length ? '\n    ' + certInfo.join('\n    ') : ''}`;
+    case 'resolutions': {
+      const host = attrs.host_name || item.id;
+      const date = attrs.date ? formatDateTime(Number(attrs.date)).split(' ')[0] : '';
+      return `• ${host}${date ? ` (${date})` : ''}`;
+    }
 
-    case 'resolutions':
-      return `  • Host: ${attrs.host_name || 'Unknown'}
-    Last Resolved: ${attrs.date ? formatDateTime(Number(attrs.date)) : 'Unknown'}`;
+    case 'urls': {
+      const url = attrs.url || item.id;
+      const mal = attrs.last_analysis_stats?.malicious;
+      return `• ${url}${mal ? ` [🔴 ${mal} mal]` : ''}`;
+    }
 
-    case 'related_threat_actors':
-      return `  • ${attrs.name || item.id}
-    Description: ${attrs.description || 'No description available'}`;
+    case 'historical_ssl_certificates': {
+      const sub = attrs.subject?.CN || item.id;
+      const iss = attrs.issuer?.O || attrs.issuer?.CN || '';
+      return `• ${sub}${iss ? ` (Issuer: ${iss})` : ''}`;
+    }
 
-    case 'urls':
-      return `  • ${attrs.url || item.id}
-    Last Analysis: ${attrs.last_analysis_date ? formatDateTime(attrs.last_analysis_date) : 'Unknown'}
-    Reputation: ${attrs.reputation ?? 'Unknown'}`;
+    case 'related_threat_actors': {
+      return `• Threat Actor: ${attrs.name || item.id}`;
+    }
 
     default:
-      return `  • ${item.id}`;
+      return `• ${attrs.meaningful_name || attrs.name || item.id}`;
   }
 }
 
 export function formatIpResults(data: IpData): FormattedResult {
   try {
+    const ip = data?.id || data?.ip || 'Unknown IP';
     const attributes = data?.attributes || {};
     const stats = attributes?.last_analysis_stats || {};
     const votes = attributes?.total_votes || { harmless: 0, malicious: 0 };
-    const tags = attributes?.tags || [];
-    
-    let outputArray = [
-      `🌐 IP Address Analysis`,
-      `IP: ${data?.id || data?.ip || 'Unknown IP'}`,
-      ``,
-      `📍 Network Information:`,
-      `• AS Owner: ${attributes?.as_owner || 'Unknown'}`,
-      attributes?.asn ? `• ASN: ${attributes.asn}` : null,
-      `• Network: ${attributes?.network || 'Unknown'}`,
-      `• Country: ${attributes?.country || 'Unknown'}`,
-      `• Continent: ${attributes?.continent || 'Unknown'}`,
-      `• Registry: ${attributes?.regional_internet_registry || 'Unknown'}`,
-      ``,
-      `📊 Analysis Statistics:`,
-      formatDetectionResults(stats),
+    const reputation = attributes?.reputation ?? 0;
+
+    const netParts = [
+      attributes.as_owner ? `${attributes.as_owner}` : null,
+      attributes.asn ? `ASN: ${attributes.asn}` : null,
+      attributes.country ? `Country: ${attributes.country}` : null,
+      attributes.network ? `Net: ${attributes.network}` : null,
     ].filter(Boolean);
 
-    // Add reputation and votes
-    const reputation = attributes?.reputation ?? 'N/A';
-    outputArray.push(
-      ``,
-      `👥 Community Feedback:`,
-      `• Reputation Score: ${reputation}`,
-      `• Harmless Votes: ${votes.harmless}`,
-      `• Malicious Votes: ${votes.malicious}`
-    );
+    const lines: string[] = [
+      `### 🌐 VirusTotal IP Analysis: \`${ip}\``,
+      `- **Network**: ${netParts.join(' | ') || 'N/A'}`,
+      `- ${formatDetectionResults(stats)}`,
+      `- **Reputation**: ${reputation} (Votes: ${votes.harmless} harmless, ${votes.malicious} malicious)`,
+    ];
 
-    // Add JARM hash if available
-    if (attributes?.jarm) {
-      outputArray.push(
-        ``,
-        `🔒 JARM Hash:`,
-        attributes.jarm
-      );
-    }
-
-    // Add HTTPS certificate information if available
+    // SSL Certificate (1-line compact)
     if (attributes?.last_https_certificate) {
       const cert = attributes.last_https_certificate;
-      outputArray.push(
-        ``,
-        `📜 SSL Certificate:`,
-        `• Subject: ${cert.subject?.CN || 'Unknown'}`,
-        `• Issuer: ${[cert.issuer?.O, cert.issuer?.CN].filter(Boolean).join(' - ')}`,
-        `• Valid From: ${formatDateTime(new Date(cert.validity.not_before).getTime() / 1000)}`,
-        `• Valid Until: ${formatDateTime(new Date(cert.validity.not_after).getTime() / 1000)}`,
-        `• Serial Number: ${cert.serial_number}`,
-        `• Version: ${cert.version}`,
-        `• SHA-256 Fingerprint: ${cert.thumbprint_sha256}`
-      );
-
-      // Add certificate extensions if available
-      if (cert.extensions) {
-        if (cert.extensions.subject_alternative_name?.length) {
-          outputArray.push(
-            `• Alternative Names:`,
-            ...cert.extensions.subject_alternative_name.map((name: string) => `  - ${name}`)
-          );
-        }
-        if (cert.extensions.certificate_policies?.length) {
-          outputArray.push(
-            `• Certificate Policies:`,
-            ...cert.extensions.certificate_policies.map((policy: string) => `  - ${policy}`)
-          );
-        }
-        if (cert.extensions.extended_key_usage?.length) {
-          outputArray.push(
-            `• Extended Key Usage:`,
-            ...cert.extensions.extended_key_usage.map((usage: string) => `  - ${usage}`)
-          );
-        }
-      }
+      const sub = cert.subject?.CN || 'Unknown';
+      const iss = cert.issuer?.O || cert.issuer?.CN || 'Unknown';
+      const validUntil = cert.validity?.not_after ? formatDateTime(new Date(cert.validity.not_after).getTime() / 1000).split(' ')[0] : '';
+      lines.push(`- **SSL Cert**: ${sub} (Issuer: ${iss}${validUntil ? `, Valid until: ${validUntil}` : ''})`);
     }
 
-    // Add tags if available
-    if (tags.length > 0) {
-      outputArray.push(
-        ``,
-        `🏷️ Tags:`,
-        ...tags.map((tag: string) => `• ${tag}`)
-      );
-    }
-
-    // Add key WHOIS information if available
+    // Key WHOIS summary (1 line)
     if (attributes?.whois) {
-      const whoisLines = attributes.whois.split('\n');
-      const keyFields = [
-        'Organization:',
-        'OrgName:',
-        'Country:',
-        'City:',
-        'Address:',
-        'RegDate:',
-        'NetName:',
-        'NetType:',
-        'Comment:'
-      ];
-      
-      const relevantWhois = whoisLines
-        .filter((line: string) => keyFields.some(field => line.trim().startsWith(field)))
-        .filter((item: string, index: number, self: string[]) => 
-          self.indexOf(item) === index
-        ); // Remove duplicates
+      const whoisLines = String(attributes.whois).split('\n');
+      const findField = (prefixes: string[]) => {
+        for (const line of whoisLines) {
+          const trimmed = line.trim();
+          for (const prefix of prefixes) {
+            if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+              return trimmed.split(':')[1]?.trim() || '';
+            }
+          }
+        }
+        return '';
+      };
+      const org = findField(['OrgName:', 'Organization:', 'netname:']);
+      const country = findField(['Country:']);
+      const regDate = findField(['RegDate:', 'created:']);
+      const whoisSummary = [
+        org ? `Org: ${org}` : null,
+        country ? `Country: ${country}` : null,
+        regDate ? `RegDate: ${regDate}` : null,
+      ].filter(Boolean).join(' | ');
 
-      if (relevantWhois.length > 0) {
-        outputArray.push(
-          ``,
-          `📋 WHOIS Information:`,
-          ...relevantWhois.map((line: string) => `• ${line.trim()}`),
-          attributes.whois_date ? 
-            `\nLast Updated: ${formatDateTime(attributes.whois_date)}` : null
-        );
+      if (whoisSummary) {
+        lines.push(`- **WHOIS**: ${whoisSummary}`);
       }
     }
 
-    // Format relationships if available
-    if (data.relationships) {
-      outputArray.push('\n🔗 Relationships:');
-      
+    // Tags
+    if (attributes?.tags?.length) {
+      lines.push(`- **Tags**: ${attributes.tags.slice(0, 8).join(', ')}`);
+    }
+
+    // Relationships (Compact inline previews)
+    if (data.relationships && Object.keys(data.relationships).length > 0) {
+      lines.push(`- **Relationships Summary**:`);
       for (const [relType, relData] of Object.entries(data.relationships)) {
-        const count = relData.meta?.count || (Array.isArray(relData.data) ? relData.data.length : 1);
-        
-        outputArray.push(`\n${relType} (${count} items):`);
-        
-        if (Array.isArray(relData.data)) {
-          relData.data.forEach(item => {
-            outputArray.push(formatRelationshipData(relType, item));
-          });
-        } else if (relData.data) {
-          outputArray.push(formatRelationshipData(relType, relData.data));
+        const items = Array.isArray(relData.data) ? relData.data : relData.data ? [relData.data] : [];
+        const count = relData.meta?.count ?? items.length;
+        if (count === 0 && items.length === 0) continue;
+
+        const previewItems: string[] = [];
+        for (const it of items.slice(0, 3)) {
+          const itAttrs = it.attributes || {};
+          const label =
+            itAttrs.meaningful_name ||
+            itAttrs.host_name ||
+            itAttrs.url ||
+            itAttrs.name ||
+            it.id;
+          if (label) previewItems.push(String(label));
         }
+
+        const more = count > 3 ? ` (+${count - 3} more)` : '';
+        lines.push(`  • **${relType}** (${count}): ${previewItems.join(', ')}${more}`);
       }
     }
 
     return {
-      type: "text",
-      text: outputArray.filter(Boolean).join('\n')
+      type: 'text',
+      text: lines.join('\n'),
     };
   } catch (error) {
     logToFile(`Error formatting IP results: ${error}`);
     return {
-      type: "text",
-      text: "Error formatting IP results"
+      type: 'text',
+      text: 'Error formatting IP results',
     };
   }
 }
