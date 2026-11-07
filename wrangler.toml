@@ -4,5 +4,8 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-# 可以在此处添加环境变量，敏感信息（API Key）需通过 secret 设置
-VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"
+# 支持单个 Key (VIRUSTOTAL_API_KEY) 或多个 Key 逗号/换行分隔 (VIRUSTOTAL_API_KEYS)
+# 多个 Key 会自动轮询查询并在 Key 超额/失效时自动故障转移跳过
+# 生产环境中敏感信息建议通过 npx wrangler secret put VIRUSTOTAL_API_KEYS 设置
+VIRUSTOTAL_API_KEYS = ""
+VIRUSTOTAL_API_KEY = ""

@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { initVirusTotalClient } from './utils/api.js';
+import { initVirusTotalClient, getKeyPool } from './utils/api.js';
 import {
   GetUrlReportArgsSchema,
   GetUrlRelationshipArgsSchema,
@@ -33,7 +33,8 @@ import {
 } from './handlers/index.js';
 
 type Env = {
-  VIRUSTOTAL_API_KEY: string;
+  VIRUSTOTAL_API_KEY?: string;
+  VIRUSTOTAL_API_KEYS?: string;
 };
 
 // Web Standards compatible SSE Server Transport
@@ -109,11 +110,21 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', cors());
 
+function getKeysFromEnv(env: Env): string | undefined {
+  return env.VIRUSTOTAL_API_KEYS || env.VIRUSTOTAL_API_KEY;
+}
+
+app.use('*', async (c, next) => {
+  const keys = getKeysFromEnv(c.env);
+  if (keys) {
+    initVirusTotalClient(keys);
+  }
+  await next();
+});
+
 const sseTransports = new Map<string, WebSSEServerTransport>();
 
-function createMcpServer(apiKey: string) {
-  initVirusTotalClient(apiKey);
-
+function createMcpServer() {
   const server = new McpServer({
     name: 'virustotal-mcp-cf',
     version: '1.0.0',
@@ -201,9 +212,11 @@ function createMcpServer(apiKey: string) {
 
 // Info endpoint
 app.get('/', (c) => {
+  const keys = getKeyPool().getKeys();
   return c.json({
     name: 'virustotal-mcp-cf',
     status: 'running',
+    configuredKeysCount: keys.length,
     endpoints: {
       sse: '/sse',
       message: '/message',
@@ -214,8 +227,10 @@ app.get('/', (c) => {
 
 // SSE handshake endpoint
 app.get('/sse', async (c) => {
-  const apiKey = c.env.VIRUSTOTAL_API_KEY;
-  if (!apiKey) return c.text('VIRUSTOTAL_API_KEY is not configured', 500);
+  const keys = getKeysFromEnv(c.env);
+  if (!keys) return c.text('VIRUSTOTAL_API_KEY or VIRUSTOTAL_API_KEYS is not configured', 500);
+
+  initVirusTotalClient(keys);
 
   const transport = new WebSSEServerTransport('/message');
   sseTransports.set(transport.sessionId, transport);
@@ -223,7 +238,7 @@ app.get('/sse', async (c) => {
     sseTransports.delete(transport.sessionId);
   };
 
-  const server = createMcpServer(apiKey);
+  const server = createMcpServer();
   await server.connect(transport);
 
   return transport.createStreamResponse();
@@ -244,14 +259,16 @@ app.post('/message', async (c) => {
 
 // Streamable HTTP endpoint (stateless for serverless worker environments)
 app.all('/mcp', async (c) => {
-  const apiKey = c.env.VIRUSTOTAL_API_KEY;
-  if (!apiKey) return c.text('VIRUSTOTAL_API_KEY is not configured', 500);
+  const keys = getKeysFromEnv(c.env);
+  if (!keys) return c.text('VIRUSTOTAL_API_KEY or VIRUSTOTAL_API_KEYS is not configured', 500);
+
+  initVirusTotalClient(keys);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
 
-  const server = createMcpServer(apiKey);
+  const server = createMcpServer();
   await server.connect(transport);
   return transport.handleRequest(c.req.raw);
 });
